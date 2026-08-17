@@ -1,25 +1,49 @@
-import random
+import os
+import asyncio
+from flask import Flask
+from threading import Thread
+
 import discord
 from discord.ext import commands
 import yt_dlp
 
+# ==================== KULLANICI AYARLARI ====================
+# Buradaki alanlara kendi ID ve Token bilgilerini yazabilirsin:
+BOT_TOKEN = "MTUzODY0MDgwNzI4Mjg2ODMwNA.Gu54R0.tNAodBqDwUmN4c3XcaK4IKwUfBy_UIATzt-uq4"
+METIN_KANAL_ID = 1538636940230926507  # Botun bakacağı metin kanalı ID'si
+SES_KANAL_ID = 1516142852814540923    # Botun otomatik gireceği ses kanalı ID'si
+# ============================================================
+
+# --- RENDER ÜCRETSİZ WEB SERVİSİ İÇİN MİNİ SUNUCU ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "FihBot 7/24 Aktif!"
+
+def run_web():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+Thread(target=run_web, daemon=True).start()
+
+# --- DISCORD BOT AYARLARI ---
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- KANAL VE TOKEN AYARLARI ---
-TOKEN = "MTUzODY0MDgwNzI4Mjg2ODMwNA.Gu54R0.tNAodBqDwUmN4c3XcaK4IKwUfBy_UIATzt-uq4"
-VOICE_CHANNEL_ID = 1516142852814540923  # Botun 7/24 duracağı ses kanalı ID'si
-TEXT_CHANNEL_ID = 1538636940230926507   # Botun SADECE mesaj atacağı metin kanalı ID'si
-
-# yt-dlp & FFmpeg Ayarları
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
+    'extractflat': False,
     'noplaylist': True,
-    'default_search': 'ytsearch',
-    'quiet': True
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0'
 }
+
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn'
@@ -27,100 +51,96 @@ FFMPEG_OPTIONS = {
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
-async def mesaj_gonder(gonderilecek_metin):
-    """Botun sadece belirlenen metin kanalına yazmasını sağlar."""
-    target_channel = bot.get_channel(TEXT_CHANNEL_ID)
-    if target_channel:
-        await target_channel.send(gonderilecek_metin)
-
 @bot.event
 async def on_ready():
-    print(f'{bot.user} aktif!')
-    vc_channel = bot.get_channel(VOICE_CHANNEL_ID)
-    if vc_channel and not discord.utils.get(bot.voice_clients, guild=vc_channel.guild):
-        await vc_channel.connect(reconnect=True)
-        print("7/24 Ses kanalına bağlandı.")
+    print(f"Bot başarıyla giriş yaptı: {bot.user.name}")
+    
+    # Belirtilen ses kanalına otomatik bağlanma
+    if SES_KANAL_ID:
+        channel = bot.get_channel(SES_KANAL_ID)
+        if channel and isinstance(channel, discord.VoiceChannel):
+            await channel.connect()
+            print(f"Ses kanalına otomatik bağlandı: {channel.name}")
 
-# --- MÜZİK KOMUTLARI ---
+@bot.event
+async def on_message(message):
+    # Botun kendi mesajlarını görmezden gel
+    if message.author == bot.user:
+        return
 
-@bot.command(name="play", help="Müzik çalar")
-async def play(ctx, *, search: str):
-    if not ctx.voice_client:
-        if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+    # Eğer metin kanalı ID'si tanımlıysa, sadece o kanaldan gelen komutları çalıştır
+    if METIN_KANAL_ID and message.channel.id != METIN_KANAL_ID:
+        return
+
+    await bot.process_commands(message)
+
+@bot.command(name="katil", aliases=["join"])
+async def katil(ctx):
+    if ctx.author.voice:
+        channel = ctx.author.voice.channel
+        if ctx.voice_client is None:
+            await channel.connect()
+            await ctx.send(f"🔊 **{channel.name}** kanalına bağlandım!")
         else:
-            await mesaj_gonder("Önce bir ses kanalında olmalısın!")
-            return
+            await ctx.voice_client.move_to(channel)
+    else:
+        await ctx.send("❌ Önce bir ses kanalına girmelisin!")
+
+@bot.command(name="ayril", aliases=["leave"])
+async def ayril(ctx):
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("👋 Ses kanalından ayrıldım.")
+    else:
+        await ctx.send("❌ Zaten bir ses kanalında değilim.")
+
+@bot.command(name="cal", aliases=["play"])
+async def cal(ctx, *, url_veya_arama: str):
+    # Eğer bot belirlenen sabit ses kanalında değilse veya kullanıcı ses kanalındaysa kontrol et
+    target_voice = ctx.voice_client
+
+    if not target_voice:
+        if ctx.author.voice:
+            target_voice = await ctx.author.voice.channel.connect()
+        elif SES_KANAL_ID:
+            channel = bot.get_channel(SES_KANAL_ID)
+            if channel:
+                target_voice = await channel.connect()
+
+    if not target_voice:
+        return await ctx.send("❌ Bot hiçbir ses kanalında değil!")
 
     async with ctx.typing():
-        info = ytdl.extract_info(search, download=False)
-        if 'entries' in info:
-            info = info['entries'][0]
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url_veya_arama, download=False))
         
-        url = info['url']
-        title = info.get('title', 'Müzik')
+        if 'entries' in data:
+            data = data['entries'][0]
 
-        if ctx.voice_client.is_playing():
-            ctx.voice_client.stop()
+        song_url = data['url']
+        title = data.get('title', 'Bilinmeyen Şarkı')
 
-        source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
-        ctx.voice_client.play(source)
-        await mesaj_gonder(f"🎵 **Çalınıyor:** {title}")
+        source = discord.FFmpegPCMAudio(song_url, **FFMPEG_OPTIONS)
+        
+        if target_voice.is_playing():
+            target_voice.stop()
 
-@bot.command(name="stop", help="Müziği durdurur")
-async def stop(ctx):
+        target_voice.play(source, after=lambda e: print(f"Oynatma hatası: {e}") if e else None)
+        await ctx.send(f"🎵 **Şimdi Çalıyor:** {title}")
+
+@bot.command(name="dur", aliases=["stop"])
+async def dur(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
-        await mesaj_gonder("⏹️ Müzik durduruldu.")
-
-@bot.command(name="pause", help="Müziği duraklatır")
-async def pause(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.pause()
-        await mesaj_gonder("⏸️ Müzik duraklatıldı.")
-
-@bot.command(name="resume", help="Müziği devam ettirir")
-async def resume(ctx):
-    if ctx.voice_client and ctx.voice_client.is_paused():
-        ctx.voice_client.resume()
-        await mesaj_gonder("▶️ Müzik devam ettiriliyor.")
-
-# --- BLACKJACK OYUNU ---
-
-@bot.command(name="blackjack", aliases=["bj"], help="Blackjack oynar")
-async def blackjack(ctx):
-    def kart_cek():
-        cards = [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 11]
-        return random.choice(cards)
-
-    oyuncu_kartlar = [kart_cek(), kart_cek()]
-    bot_kartlar = [kart_cek(), kart_cek()]
-
-    oyuncu_toplam = sum(oyuncu_kartlar)
-    bot_toplam = sum(bot_kartlar)
-
-    msg = f"🃏 **Blackjack** ({ctx.author.mention})\n"
-    msg += f"**Senin Kartların:** {oyuncu_kartlar} (Toplam: {oyuncu_toplam})\n"
-    msg += f"**Botun Açık Kartı:** [{bot_kartlar[0]}, ?]\n\n"
-
-    if oyuncu_toplam == 21:
-        msg += "🎉 **Blackjack! Doğrudan kazandın!**"
-    elif oyuncu_toplam > 21:
-        msg += "💥 **21'i geçtin, kaybettin!**"
+        await ctx.send("⏹️ Müzik durduruldu.")
     else:
-        while bot_toplam < 17:
-            bot_kartlar.append(kart_cek())
-            bot_toplam = sum(bot_kartlar)
+        await ctx.send("❌ Şu an çalan bir müzik yok.")
 
-        msg += f"**Botun Bütün Kartları:** {bot_kartlar} (Toplam: {bot_toplam})\n\n"
+# Token'ı koddaki BOT_TOKEN değişkeninden veya ortam değişkeninden al
+FINAL_TOKEN = os.getenv("TOKEN") or BOT_TOKEN
 
-        if bot_toplam > 21 or oyuncu_toplam > bot_toplam:
-            msg += "🏆 **Tebrikler, kazandın!**"
-        elif oyuncu_toplam < bot_toplam:
-            msg += "❌ **Bot kazandı, kaybettin!**"
-        else:
-            msg += "🤝 **Berabere bitti!**"
-
-    await mesaj_gonder(msg)
-
-bot.run(TOKEN)
+if __name__ == "__main__":
+    if FINAL_TOKEN and FINAL_TOKEN != "BURAYA_BOT_TOKENINI_YAZ":
+        bot.run(FINAL_TOKEN)
+    else:
+        print("HATA: Bot Token'ı girilmedi! Lütfen koddaki 'BOT_TOKEN' alanını doldurun.")
