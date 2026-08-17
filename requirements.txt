@@ -5,3 +5,4 @@ davey
 Flask
 discord.py[voice]
 PyNaCl
+spotipy
