@@ -31,19 +31,24 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# YouTube bot engelini asmak icin iOS/mweb istemci taklidi yapan konfigurasyon
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractflat': False,
     'noplaylist': True,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'auto',
+    'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
     'cachedir': False,
-    'youtube_include_dash_manifest': False
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['ios', 'mweb']
+        }
+    }
 }
 
 FFMPEG_OPTIONS = {
