@@ -15,8 +15,12 @@ from spotipy.oauth2 import SpotifyClientCredentials
 # ==================== KULLANICI AYARLARI ====================
 BOT_TOKEN = "BURAYA_BOT_TOKENINI_YAZ"
 CONFIG_FILE = "config.json"
-# GUILD_ID artık doğrudan çevre değişkeninden (Secret) çekiliyor:
+BALANCES_FILE = "balances.json"
+
 GUILD_ID_ENV = os.getenv("GUILD_ID") 
+OWNER_ID_ENV = os.getenv("OWNER_ID")  # Bot Sahibinin Discord ID'si (Secret)
+
+STARTING_BALANCE = 10000  # Yeni kullanıcılar 10.000 coin ile başlar
 # ============================================================
 
 app = Flask('')
@@ -43,6 +47,32 @@ def save_config(data):
         json.dump(data, f, indent=4)
 
 config_data = load_config()
+
+# Bakiye Okuma / Yazma
+def load_balances():
+    if os.path.exists(BALANCES_FILE):
+        with open(BALANCES_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_balances(data):
+    with open(BALANCES_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+user_balances = load_balances()
+
+def get_balance(user_id: int) -> int:
+    uid = str(user_id)
+    if uid not in user_balances:
+        user_balances[uid] = STARTING_BALANCE
+        save_balances(user_balances)
+    return user_balances[uid]
+
+def update_balance(user_id: int, amount: int):
+    uid = str(user_id)
+    current = get_balance(user_id)
+    user_balances[uid] = max(0, current + amount)
+    save_balances(user_balances)
 
 # Spotify İstemcisi
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
@@ -167,11 +197,8 @@ async def on_ready():
         except Exception as e:
             print(f"Voice connection error: {e}")
 
-# ==================== SUNUCUYA İLK KATILMA MESAJI ====================
-
 @bot.event
 async def on_guild_join(guild):
-    """Bot yeni bir sunucuya katıldığında karşılama kartı gönderir."""
     target_channel = guild.system_channel
     if not target_channel:
         for channel in guild.text_channels:
@@ -188,7 +215,7 @@ async def on_guild_join(guild):
         embed.set_footer(text="made by TeKyla")
         await target_channel.send(embed=embed)
 
-# ==================== SLASH KOMUTLARI ====================
+# ==================== MÜZİK SLASH KOMUTLARI ====================
 
 @bot.tree.command(name="play", description="Play a song or playlist from SoundCloud/Spotify")
 @app_commands.describe(query="Song name or link")
@@ -339,6 +366,89 @@ async def stop(interaction: discord.Interaction):
         await interaction.response.send_message("k? 🤨")
     else:
         await interaction.response.send_message("❌ Nothing is playing right now.", ephemeral=True)
+
+# ==================== EKONOMİ & COINFLIP KOMUTLARI ====================
+
+@bot.tree.command(name="balance", description="Check your or another user's coin balance")
+@app_commands.describe(user="Target user (Optional)")
+async def balance_cmd(interaction: discord.Interaction, user: discord.User = None):
+    target = user or interaction.user
+    bal = get_balance(target.id)
+    embed = discord.Embed(
+        title="💰 Wallet Status",
+        description=f"{target.mention} has **{bal:,}** coins.",
+        color=discord.Color.gold()
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="coinflip", description="Flip a coin and bet your coins (Win 2x!)")
+@app_commands.describe(choice="Choose Heads or Tails", bet="Amount of coins to bet")
+@app_commands.choices(choice=[
+    app_commands.Choice(name="Yazı (Heads)", value="heads"),
+    app_commands.Choice(name="Tura (Tails)", value="tails")
+])
+async def coinflip_cmd(interaction: discord.Interaction, choice: str, bet: int):
+    if bet <= 0:
+        return await interaction.response.send_message("❌ Bet amount must be greater than 0!", ephemeral=True)
+
+    user_bal = get_balance(interaction.user.id)
+    if bet > user_bal:
+        return await interaction.response.send_message(f"❌ You don't have enough coins! Balance: **{user_bal:,}**", ephemeral=True)
+
+    outcome = random.choice(["heads", "tails"])
+    choice_str = "Yazı 🪙" if choice == "heads" else "Tura 🪙"
+    outcome_str = "Yazı 🪙" if outcome == "heads" else "Tura 🪙"
+
+    if choice == outcome:
+        win_amount = bet * 2  # 2 Katı Kazanç
+        update_balance(interaction.user.id, win_amount)
+        new_bal = get_balance(interaction.user.id)
+        embed = discord.Embed(
+            title="🎉 You Won (2X)! ",
+            description=f"Coin landed on **{choice_str}**!\nYou won **+{win_amount:,}** coins (2x payout).\nNew Balance: **{new_bal:,}**",
+            color=discord.Color.green()
+        )
+    else:
+        update_balance(interaction.user.id, -bet)
+        new_bal = get_balance(interaction.user.id)
+        embed = discord.Embed(
+            title="💥 You Lost!",
+            description=f"Coin landed on **{outcome_str}**.\nYou lost **-{bet:,}** coins.\nNew Balance: **{new_bal:,}**",
+            color=discord.Color.red()
+        )
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="pay", description="Send coins to another user")
+@app_commands.describe(target="The user to receive coins", amount="Amount of coins to send")
+async def pay_cmd(interaction: discord.Interaction, target: discord.User, amount: int):
+    if target.id == interaction.user.id:
+        return await interaction.response.send_message("❌ You cannot send coins to yourself!", ephemeral=True)
+    if amount <= 0:
+        return await interaction.response.send_message("❌ Amount must be greater than 0!", ephemeral=True)
+
+    sender_bal = get_balance(interaction.user.id)
+    if amount > sender_bal:
+        return await interaction.response.send_message(f"❌ You don't have enough coins! Balance: **{sender_bal:,}**", ephemeral=True)
+
+    update_balance(interaction.user.id, -amount)
+    update_balance(target.id, amount)
+
+    await interaction.response.send_message(f"💸 {interaction.user.mention} sent **{amount:,}** coins to {target.mention}!")
+
+@bot.tree.command(name="set_balance", description="Set balance for a user (Bot Owner only)")
+@app_commands.describe(user="Target user", amount="New balance amount")
+async def set_balance_cmd(interaction: discord.Interaction, user: discord.User, amount: int):
+    # Yalnızca OWNER_ID secret'ındaki kişi kullanabilir
+    if str(interaction.user.id) != OWNER_ID_ENV:
+        return await interaction.response.send_message("❌ Only the Bot Owner can use this command!", ephemeral=True)
+
+    if amount < 0:
+        return await interaction.response.send_message("❌ Balance cannot be negative!", ephemeral=True)
+
+    user_balances[str(user.id)] = amount
+    save_balances(user_balances)
+    await interaction.response.send_message(f"✅ Set {user.mention}'s balance to **{amount:,}** coins.")
 
 # ==================== CONFIG KOMUTLARI ====================
 
