@@ -15,6 +15,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 # ==================== KULLANICI AYARLARI ====================
 BOT_TOKEN = "BURAYA_BOT_TOKENINI_YAZ"
 CONFIG_FILE = "config.json"
+# GUILD_ID artık doğrudan çevre değişkeninden (Secret) çekiliyor:
+GUILD_ID_ENV = os.getenv("GUILD_ID") 
 # ============================================================
 
 app = Flask('')
@@ -142,9 +144,16 @@ def play_next(interaction_or_ctx, current_song=None):
 @bot.event
 async def on_ready():
     print(f"Bot logged in as: {bot.user.name}")
+    
     try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash commands.")
+        if GUILD_ID_ENV:
+            guild = discord.Object(id=int(GUILD_ID_ENV))
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            print(f"Synced {len(synced)} slash commands directly to GUILD ID: {GUILD_ID_ENV}")
+        else:
+            synced = await bot.tree.sync()
+            print(f"Synced {len(synced)} slash commands globally.")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
@@ -165,7 +174,6 @@ async def on_guild_join(guild):
     """Bot yeni bir sunucuya katıldığında karşılama kartı gönderir."""
     target_channel = guild.system_channel
     if not target_channel:
-        # Sistem kanalı yoksa mesaj gönderilebilecek ilk metin kanalını bulur
         for channel in guild.text_channels:
             if channel.permissions_for(guild.me).send_messages:
                 target_channel = channel
