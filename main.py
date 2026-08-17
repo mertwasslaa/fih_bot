@@ -18,7 +18,7 @@ CONFIG_FILE = "config.json"
 BALANCES_FILE = "balances.json"
 
 GUILD_ID_ENV = os.getenv("GUILD_ID") 
-OWNER_ID_ENV = os.getenv("OWNER_ID")  # Bot Sahibinin Discord ID'si (Secret)
+OWNER_ID_ENV = "1468988203376578728"  # Bot Sahibinin Discord ID'si (Secret)
 
 STARTING_BALANCE = 10000  # Yeni kullanıcılar 10.000 coin ile başlar
 # ============================================================
