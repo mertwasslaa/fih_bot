@@ -82,6 +82,7 @@ FFMPEG_OPTIONS = {
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
@@ -121,7 +122,7 @@ async def play_next(interaction: discord.Interaction):
     mode = loop_modes.get(guild_id, "off")
 
     if mode == "single" and guild_id in current_songs:
-        pass  # Keep current_song as is
+        pass
     elif mode == "queue" and guild_id in current_songs:
         music_queues.setdefault(guild_id, []).append(current_songs[guild_id])
         if music_queues[guild_id]:
@@ -207,15 +208,17 @@ async def play(interaction: discord.Interaction, query: str):
 
 @bot.tree.command(name="skip", description="Skip the current playing song")
 async def skip(interaction: discord.Interaction):
+    await interaction.response.defer()
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.stop()
-        await interaction.response.send_message("⏭️ Skipped current song.")
+        await interaction.followup.send("⏭️ Skipped current song.")
     else:
-        await interaction.response.send_message("❌ Nothing is currently playing.", ephemeral=True)
+        await interaction.followup.send("❌ Nothing is currently playing.")
 
 @bot.tree.command(name="stop", description="Stop music and clear the queue")
 async def stop(interaction: discord.Interaction):
+    await interaction.response.defer()
     guild_id = interaction.guild_id
     music_queues[guild_id] = []
     current_songs.pop(guild_id, None)
@@ -223,18 +226,19 @@ async def stop(interaction: discord.Interaction):
 
     if vc:
         await vc.disconnect()
-        await interaction.response.send_message("⏹️ Stopped music and cleared the queue.")
+        await interaction.followup.send("⏹️ Stopped music and cleared the queue.")
     else:
-        await interaction.response.send_message("❌ The bot is not connected to a voice channel.", ephemeral=True)
+        await interaction.followup.send("❌ The bot is not connected to a voice channel.")
 
 @bot.tree.command(name="queue", description="Display the current music queue")
 async def queue_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
     guild_id = interaction.guild_id
     q = music_queues.get(guild_id, [])
     curr = current_songs.get(guild_id)
 
     if not curr and not q:
-        return await interaction.response.send_message("📜 Queue is currently empty.")
+        return await interaction.followup.send("📜 Queue is currently empty.")
 
     embed = discord.Embed(title="🎵 Music Queue", color=discord.Color.blue())
     if curr:
@@ -246,7 +250,7 @@ async def queue_cmd(interaction: discord.Interaction):
             queue_list += f"\n*...and {len(q)-10} more songs*"
         embed.add_field(name="Up Next", value=queue_list, inline=False)
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="loop", description="Set repeat mode (off, single, queue)")
 @app_commands.choices(mode=[
