@@ -8,13 +8,11 @@ from discord.ext import commands
 import yt_dlp
 
 # ==================== KULLANICI AYARLARI ====================
-# Buradaki alanlara kendi ID ve Token bilgilerini yazabilirsin:
 BOT_TOKEN = "MTUzODY0MDgwNzI4Mjg2ODMwNA.Gu54R0.tNAodBqDwUmN4c3XcaK4IKwUfBy_UIATzt-uq4"
-METIN_KANAL_ID = 1538636940230926507  # Botun bakacağı metin kanalı ID'si
-SES_KANAL_ID = 1516142852814540923    # Botun otomatik gireceği ses kanalı ID'si
+METIN_KANAL_ID = 1538636940230926507  # Metin kanalı ID'si (Varsa)
+SES_KANAL_ID = 1516142852814540923    # Ses kanalı ID'si (Varsa)
 # ============================================================
 
-# --- RENDER ÜCRETSİZ WEB SERVİSİ İÇİN MİNİ SUNUCU ---
 app = Flask('')
 
 @app.route('/')
@@ -27,13 +25,13 @@ def run_web():
 
 Thread(target=run_web, daemon=True).start()
 
-# --- DISCORD BOT AYARLARI ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# YouTube bot engellerini aşmak için güncellenmiş yt-dlp konfigürasyonu
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractflat': False,
@@ -41,7 +39,12 @@ YTDL_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
-    'source_address': '0.0.0.0'
+    'source_address': '0.0.0.0',
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'cachedir': False,
+    'youtube_include_dash_manifest': False
 }
 
 FFMPEG_OPTIONS = {
@@ -54,24 +57,21 @@ ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 @bot.event
 async def on_ready():
     print(f"Bot başarıyla giriş yaptı: {bot.user.name}")
-    
-    # Belirtilen ses kanalına otomatik bağlanma
     if SES_KANAL_ID:
-        channel = bot.get_channel(SES_KANAL_ID)
-        if channel and isinstance(channel, discord.VoiceChannel):
-            await channel.connect()
-            print(f"Ses kanalına otomatik bağlandı: {channel.name}")
+        try:
+            channel = bot.get_channel(SES_KANAL_ID)
+            if channel and isinstance(channel, discord.VoiceChannel):
+                await channel.connect()
+                print(f"Ses kanalına otomatik bağlandı: {channel.name}")
+        except Exception as e:
+            print(f"Sese bağlanırken hata: {e}")
 
 @bot.event
 async def on_message(message):
-    # Botun kendi mesajlarını görmezden gel
     if message.author == bot.user:
         return
-
-    # Eğer metin kanalı ID'si tanımlıysa, sadece o kanaldan gelen komutları çalıştır
     if METIN_KANAL_ID and message.channel.id != METIN_KANAL_ID:
         return
-
     await bot.process_commands(message)
 
 @bot.command(name="katil", aliases=["join"])
@@ -96,7 +96,6 @@ async def ayril(ctx):
 
 @bot.command(name="cal", aliases=["play"])
 async def cal(ctx, *, url_veya_arama: str):
-    # Eğer bot belirlenen sabit ses kanalında değilse veya kullanıcı ses kanalındaysa kontrol et
     target_voice = ctx.voice_client
 
     if not target_voice:
@@ -111,22 +110,33 @@ async def cal(ctx, *, url_veya_arama: str):
         return await ctx.send("❌ Bot hiçbir ses kanalında değil!")
 
     async with ctx.typing():
-        loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url_veya_arama, download=False))
-        
-        if 'entries' in data:
-            data = data['entries'][0]
+        try:
+            # YouTube linklerindeki tracking parametrelerini (?) temizle
+            clean_url = url_veya_arama.split("?si=")[0] if "?si=" in url_veya_arama else url_veya_arama
 
-        song_url = data['url']
-        title = data.get('title', 'Bilinmeyen Şarkı')
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(clean_url, download=False))
+            
+            if 'entries' in data and len(data['entries']) > 0:
+                data = data['entries'][0]
 
-        source = discord.FFmpegPCMAudio(song_url, **FFMPEG_OPTIONS)
-        
-        if target_voice.is_playing():
-            target_voice.stop()
+            song_url = data.get('url')
+            title = data.get('title', 'Bilinmeyen Şarkı')
 
-        target_voice.play(source, after=lambda e: print(f"Oynatma hatası: {e}") if e else None)
-        await ctx.send(f"🎵 **Şimdi Çalıyor:** {title}")
+            if not song_url:
+                return await ctx.send("❌ Şarkı bağlantısı çekilemedi.")
+
+            source = discord.FFmpegPCMAudio(song_url, **FFMPEG_OPTIONS)
+            
+            if target_voice.is_playing():
+                target_voice.stop()
+
+            target_voice.play(source, after=lambda e: print(f"Oynatma hatası: {e}") if e else None)
+            await ctx.send(f"🎵 **Şimdi Çalıyor:** {title}")
+
+        except Exception as e:
+            print(f"Hata oluştu: {e}")
+            await ctx.send(f"❌ Şarkı yüklenirken bir hata oluştu: `{e}`")
 
 @bot.command(name="dur", aliases=["stop"])
 async def dur(ctx):
@@ -136,11 +146,10 @@ async def dur(ctx):
     else:
         await ctx.send("❌ Şu an çalan bir müzik yok.")
 
-# Token'ı koddaki BOT_TOKEN değişkeninden veya ortam değişkeninden al
 FINAL_TOKEN = os.getenv("TOKEN") or BOT_TOKEN
 
 if __name__ == "__main__":
     if FINAL_TOKEN and FINAL_TOKEN != "BURAYA_BOT_TOKENINI_YAZ":
         bot.run(FINAL_TOKEN)
     else:
-        print("HATA: Bot Token'ı girilmedi! Lütfen koddaki 'BOT_TOKEN' alanını doldurun.")
+        print("HATA: Bot Token'ı bulunamadı!")
