@@ -3,3 +3,5 @@ yt-dlp
 PyNaCl
 davey
 Flask
+discord.py[voice]
+PyNaCl
