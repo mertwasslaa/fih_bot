@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import random
+from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
 
@@ -18,7 +19,8 @@ CONFIG_FILE = "config.json"
 BALANCES_FILE = "balances.json"
 
 GUILD_ID_ENV = os.getenv("GUILD_ID") 
-OWNER_ID_ENV = "1468988203376578728"  # Bot Sahibinin Discord ID'si (Secret)
+# Kendi Discord ID'ni buraya yaz (Tırnak içinde):
+OWNER_ID = "1468988203376578728"
 
 STARTING_BALANCE = 10000  # Yeni kullanıcılar 10.000 coin ile başlar
 # ============================================================
@@ -48,31 +50,33 @@ def save_config(data):
 
 config_data = load_config()
 
-# Bakiye Okuma / Yazma
+# Bakiye & Cooldown Okuma / Yazma
 def load_balances():
     if os.path.exists(BALANCES_FILE):
         with open(BALANCES_FILE, "r") as f:
             return json.load(f)
-    return {}
+    return {"users": {}, "daily_cooldowns": {}}
 
 def save_balances(data):
     with open(BALANCES_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-user_balances = load_balances()
+balance_store = load_balances()
+if "users" not in balance_store:
+    balance_store = {"users": balance_store, "daily_cooldowns": {}}
 
 def get_balance(user_id: int) -> int:
     uid = str(user_id)
-    if uid not in user_balances:
-        user_balances[uid] = STARTING_BALANCE
-        save_balances(user_balances)
-    return user_balances[uid]
+    if uid not in balance_store["users"]:
+        balance_store["users"][uid] = STARTING_BALANCE
+        save_balances(balance_store)
+    return balance_store["users"][uid]
 
 def update_balance(user_id: int, amount: int):
     uid = str(user_id)
     current = get_balance(user_id)
-    user_balances[uid] = max(0, current + amount)
-    save_balances(user_balances)
+    balance_store["users"][uid] = max(0, current + amount)
+    save_balances(balance_store)
 
 # Spotify İstemcisi
 sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
@@ -83,6 +87,7 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -174,7 +179,6 @@ def play_next(interaction_or_ctx, current_song=None):
 @bot.event
 async def on_ready():
     print(f"Bot logged in as: {bot.user.name}")
-    
     try:
         if GUILD_ID_ENV:
             guild = discord.Object(id=int(GUILD_ID_ENV))
@@ -196,24 +200,6 @@ async def on_ready():
                 print(f"Auto-connected to voice channel: {channel.name}")
         except Exception as e:
             print(f"Voice connection error: {e}")
-
-@bot.event
-async def on_guild_join(guild):
-    target_channel = guild.system_channel
-    if not target_channel:
-        for channel in guild.text_channels:
-            if channel.permissions_for(guild.me).send_messages:
-                target_channel = channel
-                break
-
-    if target_channel:
-        embed = discord.Embed(
-            title="👋 Thanks for adding me!",
-            description="Use `/play` to start listening to music or `/config` to setup default channels.",
-            color=discord.Color.purple()
-        )
-        embed.set_footer(text="made by TeKyla")
-        await target_channel.send(embed=embed)
 
 # ==================== MÜZİK SLASH KOMUTLARI ====================
 
@@ -366,8 +352,7 @@ async def stop(interaction: discord.Interaction):
         await interaction.response.send_message("k? 🤨")
     else:
         await interaction.response.send_message("❌ Nothing is playing right now.", ephemeral=True)
-
-# ==================== EKONOMİ & COINFLIP KOMUTLARI ====================
+        # ==================== EKONOMİ & OYUN KOMUTLARI ====================
 
 @bot.tree.command(name="balance", description="Check your or another user's coin balance")
 @app_commands.describe(user="Target user (Optional)")
@@ -378,6 +363,35 @@ async def balance_cmd(interaction: discord.Interaction, user: discord.User = Non
         title="💰 Wallet Status",
         description=f"{target.mention} has **{bal:,}** coins.",
         color=discord.Color.gold()
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="daily", description="Claim your daily free coins (Every 24h)")
+async def daily_cmd(interaction: discord.Interaction):
+    uid = str(interaction.user.id)
+    now = datetime.now()
+    last_claim_str = balance_store.get("daily_cooldowns", {}).get(uid)
+
+    if last_claim_str:
+        last_claim = datetime.fromisoformat(last_claim_str)
+        if now - last_claim < timedelta(hours=24):
+            remaining = timedelta(hours=24) - (now - last_claim)
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            return await interaction.response.send_message(f"⏳ You already claimed today! Come back in **{hours}h {minutes}m**.", ephemeral=True)
+
+    reward = random.randint(2000, 5000)
+    update_balance(interaction.user.id, reward)
+
+    if "daily_cooldowns" not in balance_store:
+        balance_store["daily_cooldowns"] = {}
+    balance_store["daily_cooldowns"][uid] = now.isoformat()
+    save_balances(balance_store)
+
+    embed = discord.Embed(
+        title="🎁 Daily Reward Claimed!",
+        description=f"You received **+{reward:,}** coins!\nNew Balance: **{get_balance(interaction.user.id):,}**",
+        color=discord.Color.green()
     )
     await interaction.response.send_message(embed=embed)
 
@@ -400,12 +414,12 @@ async def coinflip_cmd(interaction: discord.Interaction, choice: str, bet: int):
     outcome_str = "Yazı 🪙" if outcome == "heads" else "Tura 🪙"
 
     if choice == outcome:
-        win_amount = bet * 2  # 2 Katı Kazanç
+        win_amount = bet * 2
         update_balance(interaction.user.id, win_amount)
         new_bal = get_balance(interaction.user.id)
         embed = discord.Embed(
             title="🎉 You Won (2X)! ",
-            description=f"Coin landed on **{choice_str}**!\nYou won **+{win_amount:,}** coins (2x payout).\nNew Balance: **{new_bal:,}**",
+            description=f"Coin landed on **{choice_str}**!\nYou won **+{win_amount:,}** coins.\nNew Balance: **{new_bal:,}**",
             color=discord.Color.green()
         )
     else:
@@ -417,6 +431,139 @@ async def coinflip_cmd(interaction: discord.Interaction, choice: str, bet: int):
             color=discord.Color.red()
         )
 
+    await interaction.response.send_message(embed=embed)
+
+# --- BLACKJACK SİSTEMİ (BUTONLU & EMOJİLİ) ---
+SUITS = ['♠️', '♥️', '♦️', '♣️']
+RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+
+def draw_card():
+    rank = random.choice(RANKS)
+    suit = random.choice(SUITS)
+    val = 10 if rank in ['J', 'Q', 'K'] else (11 if rank == 'A' else int(rank))
+    return {'rank': rank, 'suit': suit, 'val': val, 'str': f"`{rank}{suit}`"}
+
+def calculate_hand(hand):
+    val = sum(c['val'] for c in hand)
+    aces = sum(1 for c in hand if c['rank'] == 'A')
+    while val > 21 and aces > 0:
+        val -= 10
+        aces -= 1
+    return val
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, user_id, bet, player_hand, dealer_hand):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.bet = bet
+        self.player_hand = player_hand
+        self.dealer_hand = dealer_hand
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Kart Çek (Hit) 🃏", style=discord.ButtonStyle.green)
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.player_hand.append(draw_card())
+        p_val = calculate_hand(self.player_hand)
+
+        if p_val > 21:
+            update_balance(self.user_id, -self.bet)
+            self.stop_buttons()
+            embed = discord.Embed(title="💥 BUST! (21'i Geçtin)", color=discord.Color.red())
+            embed.add_field(name="Kartların", value=" ".join(c['str'] for c in self.player_hand) + f" (Toplam: {p_val})")
+            embed.add_field(name="Kurpiyer", value=" ".join(c['str'] for c in self.dealer_hand))
+            embed.add_field(name="Sonuç", value=f"**-{self.bet:,}** coin kaybettin.\nYeni Bakiye: **{get_balance(self.user_id):,}**", inline=False)
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            embed = discord.Embed(title="🃏 Blackjack", color=discord.Color.blue())
+            embed.add_field(name="Kartların", value=" ".join(c['str'] for c in self.player_hand) + f" (Toplam: {p_val})")
+            embed.add_field(name="Kurpiyerin Açık Kartı", value=self.dealer_hand[0]['str'])
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Kal (Stand) ✋", style=discord.ButtonStyle.red)
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        p_val = calculate_hand(self.player_hand)
+        d_val = calculate_hand(self.dealer_hand)
+
+        while d_val < 17:
+            self.dealer_hand.append(draw_card())
+            d_val = calculate_hand(self.dealer_hand)
+
+        self.stop_buttons()
+
+        if d_val > 21 or p_val > d_val:
+            win_amt = self.bet * 2
+            update_balance(self.user_id, win_amt)
+            status = f"🎉 **Kazandın!** (+{win_amt:,} coin)"
+            color = discord.Color.green()
+        elif p_val < d_val:
+            update_balance(self.user_id, -self.bet)
+            status = f"💥 **Kaybettin!** (-{self.bet:,} coin)"
+            color = discord.Color.red()
+        else:
+            status = "🤝 **Berabere!** Bahsin iade edildi."
+            color = discord.Color.gold()
+
+        embed = discord.Embed(title="🃏 Blackjack Sonucu", color=color)
+        embed.add_field(name="Kartların", value=" ".join(c['str'] for c in self.player_hand) + f" (Toplam: {p_val})")
+        embed.add_field(name="Kurpiyerin Kartları", value=" ".join(c['str'] for c in self.dealer_hand) + f" (Toplam: {d_val})")
+        embed.add_field(name="Durum", value=f"{status}\nYeni Bakiye: **{get_balance(self.user_id):,}**", inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def stop_buttons(self):
+        for child in self.children:
+            child.disabled = True
+
+@bot.tree.command(name="blackjack", description="Play a game of Blackjack against the dealer")
+@app_commands.describe(bet="Amount of coins to bet")
+async def blackjack_cmd(interaction: discord.Interaction, bet: int):
+    if bet <= 0:
+        return await interaction.response.send_message("❌ Bet amount must be greater than 0!", ephemeral=True)
+
+    user_bal = get_balance(interaction.user.id)
+    if bet > user_bal:
+        return await interaction.response.send_message(f"❌ You don't have enough coins! Balance: **{user_bal:,}**", ephemeral=True)
+
+    p_hand = [draw_card(), draw_card()]
+    d_hand = [draw_card(), draw_card()]
+
+    p_val = calculate_hand(p_hand)
+
+    if p_val == 21:
+        win_amt = int(bet * 2.5)
+        update_balance(interaction.user.id, win_amt)
+        embed = discord.Embed(title="🔥 BLACKJACK!", description=f"Doğal 21 yaptın ve **+{win_amt:,}** coin kazandın!", color=discord.Color.green())
+        return await interaction.response.send_message(embed=embed)
+
+    embed = discord.Embed(title="🃏 Blackjack", color=discord.Color.blue())
+    embed.add_field(name="Kartların", value=" ".join(c['str'] for c in p_hand) + f" (Toplam: {p_val})")
+    embed.add_field(name="Kurpiyerin Açık Kartı", value=d_hand[0]['str'])
+
+    view = BlackjackView(interaction.user.id, bet, p_hand, d_hand)
+    await interaction.response.send_message(embed=embed, view=view)
+
+@bot.tree.command(name="leaderboard", description="Show server rich list with custom badges")
+async def leaderboard_cmd(interaction: discord.Interaction):
+    sorted_users = sorted(balance_store["users"].items(), key=lambda x: x[1], reverse=True)
+    
+    if not sorted_users:
+        return await interaction.response.send_message("❌ No balance data found.", ephemeral=True)
+
+    badges = ["💎", "🥇", "🥈", "🥈", "🥉", "🥉", "🥉", "🥉"]
+    desc = ""
+
+    for idx, (uid, bal) in enumerate(sorted_users[:8]):
+        badge = badges[idx] if idx < len(badges) else "🥉"
+        user_obj = interaction.guild.get_member(int(uid))
+        name = user_obj.mention if user_obj else f"User ({uid})"
+        desc += f"{badge} **#{idx+1}** {name} ➔ **{bal:,}** coins\n"
+
+    embed = discord.Embed(title="🏆 Zenginler Sıralaması", description=desc, color=discord.Color.purple())
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="pay", description="Send coins to another user")
@@ -433,22 +580,151 @@ async def pay_cmd(interaction: discord.Interaction, target: discord.User, amount
 
     update_balance(interaction.user.id, -amount)
     update_balance(target.id, amount)
-
     await interaction.response.send_message(f"💸 {interaction.user.mention} sent **{amount:,}** coins to {target.mention}!")
 
 @bot.tree.command(name="set_balance", description="Set balance for a user (Bot Owner only)")
 @app_commands.describe(user="Target user", amount="New balance amount")
 async def set_balance_cmd(interaction: discord.Interaction, user: discord.User, amount: int):
-    # Yalnızca OWNER_ID secret'ındaki kişi kullanabilir
-    if str(interaction.user.id) != OWNER_ID_ENV:
+    if str(interaction.user.id) != OWNER_ID:
         return await interaction.response.send_message("❌ Only the Bot Owner can use this command!", ephemeral=True)
 
     if amount < 0:
         return await interaction.response.send_message("❌ Balance cannot be negative!", ephemeral=True)
 
-    user_balances[str(user.id)] = amount
-    save_balances(user_balances)
+    balance_store["users"][str(user.id)] = amount
+    save_balances(balance_store)
     await interaction.response.send_message(f"✅ Set {user.mention}'s balance to **{amount:,}** coins.")
+
+# ==================== ROL MAĞAZASI KOMUTLARI ====================
+
+SHOP_ITEMS = {
+    "1": {"name": "VIP", "price": 50000},
+    "2": {"name": "Milyoner 💎", "price": 100000},
+    "3": {"name": "Sunucu Ağası 👑", "price": 250000}
+}
+
+@bot.tree.command(name="shop", description="Show server role shop")
+async def shop_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(title="🛒 Unvan & Rol Mağazası", description="Coin biriktirerek Discord'da görünen özel roller satın alabilirsin!", color=discord.Color.gold())
+    for item_id, data in SHOP_ITEMS.items():
+        embed.add_field(name=f"ID `{item_id}` ➔ {data['name']}", value=f"Fiyat: **{data['price']:,}** coins", inline=False)
+    embed.set_footer(text="Satın almak için: /buy [id] | İade/Takas için: /trade [id]")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="buy", description="Buy a role from the shop")
+@app_commands.describe(item_id="Role ID to buy (1, 2, 3)")
+async def buy_cmd(interaction: discord.Interaction, item_id: str):
+    if item_id not in SHOP_ITEMS:
+        return await interaction.response.send_message("❌ Invalid item ID! Use `/shop` to view available items.", ephemeral=True)
+
+    item = SHOP_ITEMS[item_id]
+    price = item["price"]
+    role_name = item["name"]
+    user_bal = get_balance(interaction.user.id)
+
+    if user_bal < price:
+        return await interaction.response.send_message(f"❌ You don't have enough coins! Needed: **{price:,}**", ephemeral=True)
+
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+    if not role:
+        try:
+            role = await interaction.guild.create_role(name=role_name, color=discord.Color.random(), reason="Shop Role Created")
+        except Exception as e:
+            return await interaction.response.send_message(f"❌ Failed to create role on server: {e}", ephemeral=True)
+
+    if role in interaction.user.roles:
+        return await interaction.response.send_message("❌ You already have this role!", ephemeral=True)
+
+    update_balance(interaction.user.id, -price)
+    await interaction.user.add_roles(role)
+    await interaction.response.send_message(f"🎉 Congratulations! You bought and equipped the **{role_name}** role!")
+
+@bot.tree.command(name="trade", description="Satın aldığın bir unvanı/rolü iade edip coin geri al")
+@app_commands.describe(item_id="İade etmek istediğin rolün Mağaza ID'si (1, 2, 3)")
+async def trade_cmd(interaction: discord.Interaction, item_id: str):
+    if item_id not in SHOP_ITEMS:
+        return await interaction.response.send_message("❌ Geçersiz ürün ID'si! `/shop` yazarak ID'lere bakabilirsin.", ephemeral=True)
+
+    item = SHOP_ITEMS[item_id]
+    original_price = item["price"]
+    role_name = item["name"]
+    refund_amount = int(original_price * 0.8) # %80 geri iade oranı
+
+    role = discord.utils.get(interaction.guild.roles, name=role_name)
+    if not role or role not in interaction.user.roles:
+        return await interaction.response.send_message(f"❌ Sende **{role_name}** rolü bulunmuyor!", ephemeral=True)
+
+    try:
+        await interaction.user.remove_roles(role)
+    except Exception as e:
+        return await interaction.response.send_message(f"❌ Rol senden alınırken bir hata oluştu: {e}", ephemeral=True)
+
+    update_balance(interaction.user.id, refund_amount)
+    await interaction.response.send_message(f"🔄 **{role_name}** unvanını başarıyla takas ettin/iade ettin! Hesabına **+{refund_amount:,}** coin eklendi (%80 İade).")
+    # ==================== YÖNETİM & SES MODERASYON KOMUTLARI ====================
+
+@bot.tree.command(name="move", description="Move user to another voice channel")
+@app_commands.describe(user="Target user", channel="Destination voice channel")
+@app_commands.checks.has_permissions(move_members=True)
+async def move_cmd(interaction: discord.Interaction, user: discord.Member, channel: discord.VoiceChannel):
+    if not user.voice:
+        return await interaction.response.send_message("❌ User is not in any voice channel!", ephemeral=True)
+    await user.move_to(channel)
+    await interaction.response.send_message(f"🚚 Moved {user.mention} to **{channel.name}**!")
+
+@bot.tree.command(name="mute", description="Mute user in voice channel")
+@app_commands.describe(user="Target user")
+@app_commands.checks.has_permissions(mute_members=True)
+async def mute_cmd(interaction: discord.Interaction, user: discord.Member):
+    if not user.voice:
+        return await interaction.response.send_message("❌ User is not in any voice channel!", ephemeral=True)
+    await user.edit(mute=True)
+    await interaction.response.send_message(f"🤐 Muted {user.mention} in voice!")
+
+@bot.tree.command(name="unmute", description="Unmute user in voice channel")
+@app_commands.describe(user="Target user")
+@app_commands.checks.has_permissions(mute_members=True)
+async def unmute_cmd(interaction: discord.Interaction, user: discord.Member):
+    if not user.voice:
+        return await interaction.response.send_message("❌ User is not in any voice channel!", ephemeral=True)
+    await user.edit(mute=False)
+    await interaction.response.send_message(f"🎙️ Unmuted {user.mention} in voice!")
+
+@bot.tree.command(name="deafen", description="Deafen user in voice channel")
+@app_commands.describe(user="Target user")
+@app_commands.checks.has_permissions(deafen_members=True)
+async def deafen_cmd(interaction: discord.Interaction, user: discord.Member):
+    if not user.voice:
+        return await interaction.response.send_message("❌ User is not in any voice channel!", ephemeral=True)
+    await user.edit(deafen=True)
+    await interaction.response.send_message(f"🔇 Deafened {user.mention} in voice!")
+
+@bot.tree.command(name="undeafen", description="Undeafen user in voice channel")
+@app_commands.describe(user="Target user")
+@app_commands.checks.has_permissions(deafen_members=True)
+async def undeafen_cmd(interaction: discord.Interaction, user: discord.Member):
+    if not user.voice:
+        return await interaction.response.send_message("❌ User is not in any voice channel!", ephemeral=True)
+    await user.edit(deafen=False)
+    await interaction.response.send_message(f"🔊 Undeafened {user.mention} in voice!")
+
+@bot.tree.command(name="disconnect", description="Disconnect user from voice channel")
+@app_commands.describe(user="Target user")
+@app_commands.checks.has_permissions(move_members=True)
+async def disconnect_cmd(interaction: discord.Interaction, user: discord.Member):
+    if not user.voice:
+        return await interaction.response.send_message("❌ User is not in any voice channel!", ephemeral=True)
+    await user.move_to(None)
+    await interaction.response.send_message(f"🚪 Disconnected {user.mention} from voice!")
+
+@bot.tree.command(name="clear", description="Clear text messages in current channel")
+@app_commands.describe(amount="Number of messages to delete (1-100)")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def clear_cmd(interaction: discord.Interaction, amount: int):
+    if amount < 1 or amount > 100:
+        return await interaction.response.send_message("❌ Amount must be between 1 and 100!", ephemeral=True)
+    deleted = await interaction.channel.purge(limit=amount)
+    await interaction.response.send_message(f"🧹 Cleared **{len(deleted)}** messages!", ephemeral=True)
 
 # ==================== CONFIG KOMUTLARI ====================
 
