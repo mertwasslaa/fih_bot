@@ -10,9 +10,9 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
 # ==================== KULLANICI AYARLARI ====================
-BOT_TOKEN = "BURAYA_BOT_TOKENINI_YAZ"
-METIN_KANAL_ID = 123456789012345678  # Metin kanalı ID'si (Varsa)
-SES_KANAL_ID = 123456789012345678    # Ses kanalı ID'si (Varsa)
+BOT_TOKEN = "MTUzODY0MDgwNzI4Mjg2ODMwNA.Gu54R0.tNAodBqDwUmN4c3XcaK4IKwUfBy_UIATzt-uq4"
+METIN_KANAL_ID = 1538636940230926507  # Metin kanalı ID'si (Varsa)
+SES_KANAL_ID = 1516142852814540923    # Ses kanalı ID'si (Varsa)
 # ============================================================
 
 app = Flask('')
