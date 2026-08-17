@@ -1,6 +1,6 @@
-discord.py
 discord.py[voice]
 yt-dlp
 Flask
 PyNaCl
 spotipy
+python-dotenv
