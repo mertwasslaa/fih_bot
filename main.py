@@ -1,11 +1,14 @@
 import os
 import asyncio
+import re
 from flask import Flask
 from threading import Thread
 
 import discord
 from discord.ext import commands
 import yt_dlp
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
 # ==================== KULLANICI AYARLARI ====================
 BOT_TOKEN = "MTUzODY0MDgwNzI4Mjg2ODMwNA.Gu54R0.tNAodBqDwUmN4c3XcaK4IKwUfBy_UIATzt-uq4"
@@ -25,30 +28,31 @@ def run_web():
 
 Thread(target=run_web, daemon=True).start()
 
+# Spotify İstemcisi (Anonim erişim için)
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+    client_id=os.getenv("SPOTIPY_CLIENT_ID", "5ef970630e104111a43a05187766b57d"),
+    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET", "643e2f5b404d495dbbf77a0ef7394d13")
+))
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# YouTube bot engelini asmak icin iOS/mweb istemci taklidi yapan konfigurasyon
+# Arama motoru varsayılan olarak SoundCloud (scsearch) ayarlandı
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'extractflat': False,
     'noplaylist': True,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'ytsearch',
+    'default_search': 'scsearch',
     'source_address': '0.0.0.0',
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
     'cachedir': False,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['ios', 'mweb']
-        }
-    }
 }
 
 FFMPEG_OPTIONS = {
@@ -57,6 +61,18 @@ FFMPEG_OPTIONS = {
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+
+def get_spotify_query(url):
+    """Spotify linkinden şarkı adı ve sanatçı bilgisini çeker"""
+    try:
+        if "track" in url:
+            track = sp.track(url)
+            artist = track['artists'][0]['name']
+            song_name = track['name']
+            return f"{artist} - {song_name}"
+    except Exception as e:
+        print(f"Spotify error: {e}")
+    return None
 
 @bot.event
 async def on_ready():
@@ -116,10 +132,19 @@ async def cal(ctx, *, url_veya_arama: str):
 
     async with ctx.typing():
         try:
-            clean_url = url_veya_arama.split("?si=")[0] if "?si=" in url_veya_arama else url_veya_arama
+            query = url_veya_arama.strip()
+
+            # Spotify linki kontrolü
+            if "spotify.com" in query:
+                await ctx.send("💚 Fetching from Spotify...")
+                spotify_search = get_spotify_query(query)
+                if spotify_search:
+                    query = spotify_search
+                else:
+                    return await ctx.send("❌ Couldn't parse Spotify link.")
 
             loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(clean_url, download=False))
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
             
             if 'entries' in data and len(data['entries']) > 0:
                 data = data['entries'][0]
@@ -128,7 +153,7 @@ async def cal(ctx, *, url_veya_arama: str):
             title = data.get('title', 'Unknown Track')
 
             if not song_url:
-                return await ctx.send("❌ Couldn't fetch song link.")
+                return await ctx.send("❌ Couldn't fetch audio link.")
 
             source = discord.FFmpegPCMAudio(song_url, **FFMPEG_OPTIONS)
             
