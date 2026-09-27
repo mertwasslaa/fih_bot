@@ -80,6 +80,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: discord.
 async def load_cogs():
     await bot.load_extension("cogs.music")
     await bot.load_extension("cogs.economy_moderation")
+    await bot.load_extension("cogs.extra")
 
 
 async def main():
