@@ -81,6 +81,7 @@ async def load_cogs():
     await bot.load_extension("cogs.music")
     await bot.load_extension("cogs.economy_moderation")
     await bot.load_extension("cogs.extra")
+    await bot.load_extension("cogs.ai_chat")
 
 
 async def main():
